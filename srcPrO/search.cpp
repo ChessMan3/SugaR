@@ -239,7 +239,11 @@ void Search::think() {
   Color us = RootPos.side_to_move();
   Time.init(Limits, us, RootPos.game_ply(), now());
 
+#ifdef DprO
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
+#else
+  const int contempt = 0;
+#endif
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
 
@@ -691,6 +695,7 @@ namespace {
     if (ss->skipEarlyPruning)
         goto moves_loop;
 
+#ifdef DPrO
     // Step 6. Razoring (skipped when in check)
     if (   !PvNode
         &&  depth < 4 * ONE_PLY
@@ -798,7 +803,7 @@ namespace {
         tte = TT.probe(posKey, ttHit);
         ttMove = ttHit ? tte->move() : MOVE_NONE;
     }
-
+#endif
 moves_loop: // When in check and at SpNode search starts from here
 
     Square prevMoveSq = to_sq((ss-1)->currentMove);
@@ -900,6 +905,7 @@ moves_loop: // When in check and at SpNode search starts from here
       // Update the current move (this must be done after singular extension search)
       newDepth = depth - ONE_PLY + extension;
 
+#ifdef DPrO
       // Step 13. Pruning at shallow depth
       if (   !RootNode
           && !captureOrPromotion
@@ -948,6 +954,7 @@ moves_loop: // When in check and at SpNode search starts from here
           }
       }
 
+#endif
       // Speculative prefetch as early as possible
       prefetch(TT.first_entry(pos.key_after(move)));
 
