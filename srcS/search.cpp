@@ -1,15 +1,15 @@
 /*
-  SugaR, a UCI chess playing engine derived from Stockfish
+  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
   Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
-  SugaR is free software: you can redistribute it and/or modify
+  Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
   (at your option) any later version.
 
-  SugaR is distributed in the hope that it will be useful,
+  Stockfish is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
   GNU General Public License for more details.
@@ -25,7 +25,6 @@
 #include <iostream>
 #include <sstream>
 
-#include "book.h"
 #include "evaluate.h"
 #include "misc.h"
 #include "movegen.h"
@@ -57,8 +56,6 @@ namespace TB = Tablebases;
 
 using std::string;
 using Eval::evaluate;
-using Eval::Optimism;
-using Eval::rootColor;
 using namespace Search;
 
 namespace {
@@ -261,7 +258,6 @@ template uint64_t Search::perft<true>(Position&, Depth);
 
 void MainThread::search() {
 
-  static PolyglotBook book; // Defined static to initialize the PRNG only once
   Color us = rootPos.side_to_move();
   Time.init(Limits, us, rootPos.game_ply());
 
@@ -269,34 +265,8 @@ void MainThread::search() {
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
 
-  rootColor = rootPos.side_to_move();
-
-  std::memset(Optimism, 0, sizeof(Optimism));
-
-  // Distortion values of eval when we are winning
-  Optimism[WINNING][MATERIAL ][ us] =  Options["winning_optimism_pieces_us"];
-  Optimism[WINNING][PAWN     ][ us] =  Options["winning_optimism_pawns_us"];
-  Optimism[WINNING][MOBILITY ][ us] =  Options["winning_optimism_mobility_us"];
-
-  Optimism[WINNING][MATERIAL ][~us] =  Options["winning_optimism_pieces_them"];
-
-  Optimism[WINNING][PAWN     ][~us] =  Options["winning_optimism_pawns_them"];
-  Optimism[WINNING][MOBILITY ][~us] =  Options["winning_optimism_mobility_them"];
-
-  // Distortion values of eval when we are losing
-  Optimism[LOSING][MATERIAL ][ us] =  Options["losing_optimism_pieces_us"];
-  Optimism[LOSING][PAWN     ][ us] =  Options["losing_optimism_pawns_us"];
-
-  Optimism[LOSING][MOBILITY ][ us] =  Options["losing_optimism_mobility_us"];
-
-  Optimism[LOSING][MATERIAL ][~us] =  Options["losing_optimism_pieces_them"];
-
-  Optimism[LOSING][PAWN     ][~us] =  Options["losing_optimism_pawns_them"];
-  Optimism[LOSING][MOBILITY ][~us] =  Options["losing_optimism_mobility_them"];
-
-
   if (rootMoves.empty())
-      {
+  {
       rootMoves.push_back(RootMove(MOVE_NONE));
       sync_cout << "info depth 0 score "
                 << UCI::value(rootPos.checkers() ? -VALUE_MATE : VALUE_DRAW)
@@ -304,17 +274,6 @@ void MainThread::search() {
   }
   else
   {
-      if (Options["OwnBook"] && !Limits.infinite && !Limits.mate)
-      {
-          Move bookMove = book.probe(rootPos, Options["Book File"], Options["Best Book Line"]);
-
-          if (bookMove && std::count(rootMoves.begin(), rootMoves.end(), bookMove))
-          {
-              std::swap(rootMoves[0], *std::find(rootMoves.begin(), rootMoves.end(), bookMove));
-              goto finalize;
-          }
-      }
-
       for (Thread* th : Threads)
           if (th != this)
               th->start_searching();
@@ -327,7 +286,6 @@ void MainThread::search() {
   if (Limits.npmsec)
       Time.availableNodes += Limits.inc[us] - Threads.nodes_searched();
 
-finalize:
   // When we reach the maximum depth, we can arrive here without a raise of
   // Signals.stop. However, if we are pondering or in an infinite search,
   // the UCI protocol states that we shouldn't print the best move before the
@@ -455,7 +413,7 @@ void Thread::search() {
           // high/low anymore.
           while (true)
           {
-              bestValue = ::search<PV>(rootPos, ss, alpha, beta, rootDepth, false, true);
+              bestValue = ::search<PV>(rootPos, ss, alpha, beta, rootDepth, false, false);
 
               // Bring the best move to the front. It is critical that sorting
               // is done with a stable algorithm because all the values but the
@@ -547,7 +505,7 @@ void Thread::search() {
 
               bool doEasyMove =   rootMoves[0].pv[0] == easyMove
                                && mainThread->bestMoveChanges < 0.03
-                               && Time.elapsed() > Time.optimum() * 5 / 44;
+                               && Time.elapsed() > Time.optimum() * 5 / 42;
 
               if (   rootMoves.size() == 1
                   || Time.elapsed() > Time.optimum() * unstablePvFactor * improvingFactor / 628
@@ -605,8 +563,7 @@ namespace {
     TTEntry* tte;
     Key posKey;
     Move ttMove, move, excludedMove, bestMove;
-    Depth extension, newDepth, depthGain = depth;
-;
+    Depth extension, newDepth;
     Value bestValue, value, ttValue, eval, nullValue;
     bool ttHit, inCheck, givesCheck, singularExtensionNode, improving;
     bool captureOrPromotion, doFullDepthSearch, moveCountPruning;
@@ -688,7 +645,6 @@ namespace {
                             : (tte->bound() & BOUND_UPPER)))
     {
         // If ttMove is quiet, update move sorting heuristics on TT hit
-
         if (ttMove)
         {
             if (ttValue >= beta)
@@ -760,12 +716,6 @@ namespace {
         if (ttValue != VALUE_NONE)
             if (tte->bound() & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER))
                 eval = ttValue;
-
-        if (tte->depth() > DEPTH_ZERO && tte->depth() < depth)
-            depthGain -= tte->depth();
-
-        else if (tte->depth() > DEPTH_ZERO && tte->depth() >= depth)
-            depthGain = DEPTH_ZERO;
     }
     else
     {
@@ -782,20 +732,22 @@ namespace {
 
     // Step 6. Razoring (skipped when in check)
     if (   !PvNode
-        &&  depthGain < 3 * ONE_PLY
-        &&  eval + razor_margin[depthGain / ONE_PLY] <= alpha)
+        &&  depth < 4 * ONE_PLY
+        &&  ttMove == MOVE_NONE
+        &&  eval + razor_margin[depth / ONE_PLY] <= alpha)
     {
         if (depth <= ONE_PLY)
             return qsearch<NonPV, false>(pos, ss, alpha, alpha+1);
 
-        Value ralpha = alpha - razor_margin[depthGain / ONE_PLY];
+        Value ralpha = alpha - razor_margin[depth / ONE_PLY];
         Value v = qsearch<NonPV, false>(pos, ss, ralpha, ralpha+1);
         if (v <= ralpha)
             return v;
     }
 
     // Step 7. Futility pruning: child node (skipped when in check)
-    if (    depth < 7 * ONE_PLY
+    if (   !rootNode
+        &&  depth < 7 * ONE_PLY
         &&  eval - futility_margin(depth) >= beta
         &&  eval < VALUE_KNOWN_WIN  // Do not return unproven wins
         &&  pos.non_pawn_material(pos.side_to_move()))
@@ -886,16 +838,16 @@ moves_loop: // When in check search starts from here
     const CounterMoveStats* fmh2 = (ss-4)->counterMoves;
 
     MovePicker mp(pos, ttMove, depth, ss);
-
     value = bestValue; // Workaround a bogus 'uninitialized' warning under gcc
     improving =   ss->staticEval >= (ss-2)->staticEval
             /* || ss->staticEval == VALUE_NONE Already implicit in the previous condition */
                ||(ss-2)->staticEval == VALUE_NONE;
 
-    singularExtensionNode =   !skipEarlyPruning
+    singularExtensionNode =   !rootNode
                            &&  depth >= 8 * ONE_PLY
                            &&  ttMove != MOVE_NONE
                            &&  ttValue != VALUE_NONE
+                           && !excludedMove // Recursive singular search is not allowed
                            && (tte->bound() & BOUND_LOWER)
                            &&  tte->depth() >= depth - 3 * ONE_PLY;
 
@@ -995,11 +947,13 @@ moves_loop: // When in check search starts from here
                   continue;
 
               // Prune moves with negative SEE
-              if (   !pos.see_ge(move, Value(-35 * lmrDepth * lmrDepth)))
+              if (   lmrDepth < 8
+                  && !pos.see_ge(move, Value(-35 * lmrDepth * lmrDepth)))
                   continue;
           }
-          else if (   !extension
-                   && !pos.see_ge(move, Value(-35 * depth / ONE_PLY * depth / ONE_PLY)))
+          else if (    depth < 7 * ONE_PLY
+                   && !extension
+                   && !pos.see_ge(move, -PawnValueEg * (depth / ONE_PLY)))
                   continue;
       }
 
@@ -1056,10 +1010,8 @@ moves_loop: // When in check search starts from here
               else if (ss->history < VALUE_ZERO && (ss-1)->history > VALUE_ZERO)
                   r += ONE_PLY;
 
-              int positionBonus = -75*(pos.game_phase() - 20);
-
               // Decrease/increase reduction for moves with a good/bad history
-              r = std::max(DEPTH_ZERO, (r / ONE_PLY + (positionBonus - ss->history) / 20000) * ONE_PLY);
+              r = std::max(DEPTH_ZERO, (r / ONE_PLY - ss->history / 20000) * ONE_PLY);
           }
 
           Depth d = std::max(newDepth - r, ONE_PLY);
@@ -1682,11 +1634,4 @@ void Tablebases::filter_root_moves(Position& pos, Search::RootMoves& rootMoves) 
         TB::Score =  TB::Score > VALUE_DRAW ?  VALUE_MATE - MAX_PLY - 1
                    : TB::Score < VALUE_DRAW ? -VALUE_MATE + MAX_PLY + 1
                                             :  VALUE_DRAW;
-
-
-
-
-
-
-
 }
